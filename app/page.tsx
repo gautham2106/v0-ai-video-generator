@@ -32,6 +32,9 @@ export default function Home() {
   const handleGenerate = async () => {
     if (!frontImage || !backImage) return
 
+    console.log("Backend URL:", BACKEND_API_URL)
+    console.log("Full API endpoint:", `${BACKEND_API_URL}/api/generate-video`)
+
     setState("generating")
     setProgress(0)
     setCurrentStep(0)
