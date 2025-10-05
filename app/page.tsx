@@ -9,6 +9,8 @@ import { ErrorSection } from "@/components/error-section"
 
 type AppState = "idle" | "generating" | "complete" | "error"
 
+const BACKEND_API_URL = "https://ai-video-generator-backend-production.up.railway.app"
+
 export default function Home() {
   const [state, setState] = useState<AppState>("idle")
   const [frontImage, setFrontImage] = useState<File | null>(null)
@@ -28,41 +30,107 @@ export default function Home() {
     setError(null)
 
     try {
-      // Step 1: Uploading
-      setCurrentStep(1)
-      setProgress(10)
-      await simulateDelay(1000)
+      // Create FormData with the images
+      const formData = new FormData()
+      formData.append("frontImage", frontImage)
+      formData.append("backImage", backImage)
 
-      // Step 2: Enhancing quality
-      setCurrentStep(2)
-      setProgress(25)
-      await simulateDelay(2000)
+      console.log("[v0] Starting video generation request to backend")
 
-      // Step 3: Generating side angles
-      setCurrentStep(3)
-      setProgress(50)
-      await simulateDelay(3000)
+      // Make API request to backend
+      const response = await fetch(`${BACKEND_API_URL}/api/generate-video`, {
+        method: "POST",
+        body: formData,
+      })
 
-      // Step 4: Creating video
-      setCurrentStep(4)
-      setProgress(80)
-      await simulateDelay(3000)
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.statusText}`)
+      }
 
-      // Step 5: Finalizing
-      setCurrentStep(5)
-      setProgress(100)
-      await simulateDelay(1000)
+      // Check if response is streaming (SSE) or JSON
+      const contentType = response.headers.get("content-type")
 
-      // Mock results
-      const frontUrl = URL.createObjectURL(frontImage)
-      const backUrl = URL.createObjectURL(backImage)
-      setGeneratedImages([frontUrl, backUrl, "/ai-generated-left-side-view.jpg", "/ai-generated-right-side-view.jpg"])
-      setVideoUrl("/cinematic-4-angle-video-preview.jpg")
+      if (contentType?.includes("text/event-stream")) {
+        // Handle Server-Sent Events for progress updates
+        console.log("[v0] Handling SSE stream for progress updates")
+        await handleSSEStream(response)
+      } else if (contentType?.includes("application/json")) {
+        // Handle regular JSON response
+        console.log("[v0] Handling JSON response")
+        const result = await response.json()
 
-      setState("complete")
+        // Simulate progress through steps if backend doesn't provide streaming
+        await simulateProgressWithSteps()
+
+        // Set final results
+        setGeneratedImages(result.generatedImages || [])
+        setVideoUrl(result.videoUrl || null)
+        setState("complete")
+      } else {
+        throw new Error("Unexpected response format from backend")
+      }
     } catch (err) {
-      setError("Failed to generate video. Please try again.")
+      console.error("[v0] Error during video generation:", err)
+      setError(err instanceof Error ? err.message : "Failed to generate video. Please try again.")
       setState("error")
+    }
+  }
+
+  const handleSSEStream = async (response: Response) => {
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) {
+      throw new Error("Response body is not readable")
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) break
+
+      const chunk = decoder.decode(value)
+      const lines = chunk.split("\n")
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = JSON.parse(line.slice(6))
+
+          console.log("[v0] SSE update:", data)
+
+          // Update progress based on backend response
+          if (data.step) setCurrentStep(data.step)
+          if (data.progress) setProgress(data.progress)
+
+          // Handle completion
+          if (data.status === "complete" && data.result) {
+            setGeneratedImages(data.result.generatedImages || [])
+            setVideoUrl(data.result.videoUrl || null)
+            setState("complete")
+          }
+
+          // Handle errors
+          if (data.status === "error") {
+            throw new Error(data.message || "Video generation failed")
+          }
+        }
+      }
+    }
+  }
+
+  const simulateProgressWithSteps = async () => {
+    const steps = [
+      { step: 1, progress: 10, delay: 500 },
+      { step: 2, progress: 25, delay: 1000 },
+      { step: 3, progress: 50, delay: 1500 },
+      { step: 4, progress: 80, delay: 1500 },
+      { step: 5, progress: 100, delay: 500 },
+    ]
+
+    for (const { step, progress, delay } of steps) {
+      setCurrentStep(step)
+      setProgress(progress)
+      await new Promise((resolve) => setTimeout(resolve, delay))
     }
   }
 
@@ -76,8 +144,6 @@ export default function Home() {
     setVideoUrl(null)
     setGeneratedImages([])
   }
-
-  const simulateDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
   return (
     <main className="min-h-screen bg-background py-12 px-6">
