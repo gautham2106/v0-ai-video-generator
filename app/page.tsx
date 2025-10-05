@@ -9,6 +9,13 @@ import { ErrorSection } from "@/components/error-section"
 
 type AppState = "idle" | "generating" | "complete" | "error"
 
+type Costs = {
+  enhancement: number
+  sideAngles: number
+  videoCreation: number
+  total: number
+}
+
 const BACKEND_API_URL = "https://ai-video-generator-backend-production.up.railway.app"
 
 export default function Home() {
@@ -20,6 +27,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [generatedImages, setGeneratedImages] = useState<string[]>([])
+  const [costs, setCosts] = useState<Costs | null>(null)
 
   const handleGenerate = async () => {
     if (!frontImage || !backImage) return
@@ -30,14 +38,10 @@ export default function Home() {
     setError(null)
 
     try {
-      // Create FormData with the images
       const formData = new FormData()
       formData.append("frontImage", frontImage)
       formData.append("backImage", backImage)
 
-      console.log("[v0] Starting video generation request to backend")
-
-      // Make API request to backend
       const response = await fetch(`${BACKEND_API_URL}/api/generate-video`, {
         method: "POST",
         body: formData,
@@ -47,24 +51,16 @@ export default function Home() {
         throw new Error(`API request failed: ${response.statusText}`)
       }
 
-      // Check if response is streaming (SSE) or JSON
       const contentType = response.headers.get("content-type")
 
       if (contentType?.includes("text/event-stream")) {
-        // Handle Server-Sent Events for progress updates
-        console.log("[v0] Handling SSE stream for progress updates")
         await handleSSEStream(response)
       } else if (contentType?.includes("application/json")) {
-        // Handle regular JSON response
-        console.log("[v0] Handling JSON response")
         const result = await response.json()
-
-        // Simulate progress through steps if backend doesn't provide streaming
         await simulateProgressWithSteps()
-
-        // Set final results
         setGeneratedImages(result.generatedImages || [])
         setVideoUrl(result.videoUrl || null)
+        setCosts(result.costs || null)
         setState("complete")
       } else {
         throw new Error("Unexpected response format from backend")
@@ -84,34 +80,39 @@ export default function Home() {
       throw new Error("Response body is not readable")
     }
 
+    let buffer = ""
+
     while (true) {
       const { done, value } = await reader.read()
 
       if (done) break
 
-      const chunk = decoder.decode(value)
-      const lines = chunk.split("\n")
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split("\n")
+
+      // Keep the last incomplete line in the buffer
+      buffer = lines.pop() || ""
 
       for (const line of lines) {
         if (line.startsWith("data: ")) {
-          const data = JSON.parse(line.slice(6))
+          try {
+            const data = JSON.parse(line.slice(6))
 
-          console.log("[v0] SSE update:", data)
+            if (data.step) setCurrentStep(data.step)
+            if (data.progress !== undefined) setProgress(data.progress)
 
-          // Update progress based on backend response
-          if (data.step) setCurrentStep(data.step)
-          if (data.progress) setProgress(data.progress)
+            if (data.status === "complete" && data.result) {
+              setGeneratedImages(data.result.generatedImages || [])
+              setVideoUrl(data.result.videoUrl || null)
+              setCosts(data.result.costs || null)
+              setState("complete")
+            }
 
-          // Handle completion
-          if (data.status === "complete" && data.result) {
-            setGeneratedImages(data.result.generatedImages || [])
-            setVideoUrl(data.result.videoUrl || null)
-            setState("complete")
-          }
-
-          // Handle errors
-          if (data.status === "error") {
-            throw new Error(data.message || "Video generation failed")
+            if (data.status === "error") {
+              throw new Error(data.message || "Video generation failed")
+            }
+          } catch (parseError) {
+            console.error("[v0] Failed to parse SSE data:", parseError)
           }
         }
       }
@@ -143,18 +144,17 @@ export default function Home() {
     setError(null)
     setVideoUrl(null)
     setGeneratedImages([])
+    setCosts(null)
   }
 
   return (
     <main className="min-h-screen bg-background py-12 px-6">
       <div className="max-w-4xl mx-auto space-y-8">
-        {/* Header */}
         <header className="text-center space-y-3">
           <h1 className="text-4xl font-semibold text-foreground">AI 4-Angle Video Generator</h1>
           <p className="text-lg text-muted-foreground">Upload 2 photos → Get 4-angle cinematic video</p>
         </header>
 
-        {/* Upload Section */}
         {(state === "idle" || state === "error") && (
           <UploadSection
             frontImage={frontImage}
@@ -164,22 +164,18 @@ export default function Home() {
           />
         )}
 
-        {/* Generate Button */}
         {(state === "idle" || state === "error") && (
           <GenerateButton disabled={!frontImage || !backImage} onClick={handleGenerate} />
         )}
 
-        {/* Error Section */}
         {state === "error" && error && <ErrorSection error={error} onRetry={handleGenerate} />}
 
-        {/* Progress Section */}
         {state === "generating" && (
           <ProgressSection progress={progress} currentStep={currentStep} onCancel={handleReset} />
         )}
 
-        {/* Results Section */}
         {state === "complete" && videoUrl && (
-          <ResultsSection videoUrl={videoUrl} images={generatedImages} onGenerateAnother={handleReset} />
+          <ResultsSection videoUrl={videoUrl} images={generatedImages} costs={costs} onGenerateAnother={handleReset} />
         )}
       </div>
     </main>
